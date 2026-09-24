@@ -1,0 +1,17 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+.venv/
+
+# Scraped data output
+data/
+*.csv
+*.json
+
+# Editor/OS junk
+.vscode/
+.idea/
+.DS_Store
