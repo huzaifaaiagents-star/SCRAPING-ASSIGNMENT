@@ -1,5 +1,7 @@
 import os
+import json
 import time
+from datetime import datetime, timezone
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 import requests
@@ -70,7 +72,7 @@ def get_page(page_num, page_url):
 
 
 def discover_pages():
-    all_book_links = []
+    all_book_entries = []  # list of {"url": ..., "source_page": ...}
     current_url = urljoin(BASE_URL, "page-1.html")
     page_num = 1
 
@@ -81,18 +83,18 @@ def discover_pages():
 
         soup = BeautifulSoup(html, "html.parser")
 
-        # Collect book links from this page
         for article in soup.find_all("article"):
             link_tag = article.find("a")
             if link_tag and link_tag.get("href"):
                 absolute_url = urljoin(current_url, link_tag["href"])
-                all_book_links.append(absolute_url)
+                all_book_entries.append({
+                    "url": absolute_url,
+                    "source_page": current_url
+                })
 
-        # Stop if we've hit our page cap
         if page_num == MAX_PAGES:
             break
 
-        # Find the "next" link
         next_li = soup.find("li", class_="next")
         if not next_li:
             print("No next link found — stopping.")
@@ -102,14 +104,116 @@ def discover_pages():
         current_url = urljoin(current_url, next_href)
         page_num += 1
 
-    unique_urls = list(set(all_book_links))
+    # Dedupe on URL, keep first-seen source_page
+    seen_urls = set()
+    unique_entries = []
+    for entry in all_book_entries:
+        if entry["url"] not in seen_urls:
+            seen_urls.add(entry["url"])
+            unique_entries.append(entry)
 
     print(f"catalogue_pages={page_num}")
-    print(f"discovered={len(all_book_links)}")
-    print(f"unique_urls={len(unique_urls)}")
+    print(f"discovered={len(all_book_entries)}")
+    print(f"unique_urls={len(unique_entries)}")
 
-    return unique_urls
+    with open("discovered_urls.json", "w", encoding="utf-8") as f:
+        json.dump(unique_entries, f, indent=2)
+
+    return unique_entries
 
 
 if __name__ == "__main__":
     discover_pages()
+
+# --- reuse from Stage 1/2 ---
+CACHE_DIR = "cache"
+HEADERS = {
+    "User-Agent": "FlyRankInternshipA9/1.0 (+https://github.com/huzaifaaiagents-star/SCRAPING-ASSIGNMENT)"
+}
+TIMEOUT = 5
+DELAY = 0.5
+
+
+def get_page(cache_filename, page_url):
+    cache_path = os.path.join(CACHE_DIR, cache_filename)
+
+    if os.path.exists(cache_path):
+        with open(cache_path, "r", encoding="utf-8") as f:
+            html = f.read()
+        print(f"CACHE HIT — {cache_filename} — {len(html)} bytes")
+        return html
+
+    response = requests.get(page_url, headers=HEADERS, timeout=TIMEOUT)
+    response.encoding = "utf-8"  # fixes the Â£ bug
+
+    if response.status_code != 200:
+        print(f"FAILED FETCH — {cache_filename} — status {response.status_code}")
+        return None
+
+    html = response.text
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(cache_path, "w", encoding="utf-8") as f:
+        f.write(html)
+    print(f"FETCH — {cache_filename} — {len(html)} bytes")
+
+    time.sleep(DELAY)  # only after a real request
+    return html
+
+
+def extract_record(book_url, source_page):
+    # cache filename derived from the book's slug, so each detail page gets its own file
+    slug = book_url.rstrip("/").split("/")[-2]
+    cache_filename = f"detail-{slug}.html"
+
+    html = get_page(cache_filename, book_url)
+    if html is None:
+        return None
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    title = soup.find("div", class_="product_main").find("h1").get_text(strip=True)
+
+    price_text = soup.find("p", class_="price_color").get_text(strip=True)
+
+    availability_text = soup.find("p", class_="instock availability").get_text(strip=True)
+
+    rating_tag = soup.find("p", class_="star-rating")
+    rating_text = rating_tag["class"][1] if rating_tag else None
+
+    desc_heading = soup.find("div", id="product_description")
+    if desc_heading:
+        description = desc_heading.find_next_sibling("p").get_text(strip=True)
+    else:
+        description = None
+
+    fetched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # pyrefly: ignore [invalid-syntax]
+    return {
+        "title": title,
+        "product_url": book_url,
+        "price_text": price_text,
+        "availability_text": availability_text,
+        "rating_text": rating_text,
+        "description": description,
+        "source_page": source_page,
+        "fetched_at": fetched_at,
+    }
+
+
+if __name__ == "__main__":
+    # Load the book URLs discovered in Stage 2 — adjust this to however you saved them
+    with open("discovered_urls.json", "r", encoding="utf-8") as f:
+        book_entries = json.load(f)  # expects list of {"url": ..., "source_page": ...}
+
+    records = []
+    for entry in book_entries:
+        record = extract_record(entry["url"], entry["source_page"])
+        if record:
+            records.append(record)
+
+    print(json.dumps(records[0], indent=2))
+    print(f"detail_pages={len(records)}")
+
+    with open("records.json", "w", encoding="utf-8") as f:
+        json.dump(records, f, indent=2)
