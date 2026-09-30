@@ -10,9 +10,11 @@ from pydantic import BaseModel, field_validator, ValidationError
 
 # ---- KEEP YOUR OWN VALUES HERE ----
 CACHE_DIR = "cache"
-HEADERS = {"User-Agent": "YOUR-NAMED-USER-AGENT"}
+HEADERS = {"User-Agent": "FlyRankInternshipA9/1.0 (https://github.com/huzaifaaiagents-star/SCRAPING-ASSIGNMENT)"}
 TIMEOUT = 10
 DELAY = 0.5
+RETRY_WAIT = 3
+STATS = {"pages_fetched": 0, "cache_hits": 0}
 # -----------------------------------
 
 
@@ -45,10 +47,28 @@ def get_page(cache_filename, page_url):
     if os.path.exists(cache_path):
         with open(cache_path, "r", encoding="utf-8") as f:
             html = f.read()
+        STATS["cache_hits"] += 1
         print(f"CACHE HIT — {cache_filename} — {len(html)} bytes")
         return html
 
-    response = requests.get(page_url, headers=HEADERS, timeout=TIMEOUT)
+    for attempt in (1, 2):
+        try:
+            response = requests.get(page_url, headers=HEADERS, timeout=TIMEOUT)
+        except (requests.Timeout, requests.ConnectionError) as e:
+            if attempt == 2:
+                raise RuntimeError(f"request failed after retry: {e}")
+            print(f"RETRY — {cache_filename} — {type(e).__name__}")
+            time.sleep(RETRY_WAIT)
+            continue
+
+        if response.status_code >= 500:
+            if attempt == 2:
+                raise RuntimeError(f"fetch failed with status {response.status_code} after retry")
+            print(f"RETRY — {cache_filename} — status {response.status_code}")
+            time.sleep(RETRY_WAIT)
+            continue
+        break  # 200, 404, 403 and the rest: no retry
+
     response.encoding = "utf-8"  # fixes the Â£ bug
 
     if response.status_code != 200:
@@ -58,9 +78,10 @@ def get_page(cache_filename, page_url):
     os.makedirs(CACHE_DIR, exist_ok=True)
     with open(cache_path, "w", encoding="utf-8") as f:
         f.write(html)
+    STATS["pages_fetched"] += 1
     print(f"FETCH — {cache_filename} — {len(html)} bytes")
 
-    time.sleep(DELAY)  # only after a real request
+    time.sleep(DELAY)
     return html
 
 
@@ -101,6 +122,9 @@ def extract_record(book_url, source_page):
 if __name__ == "__main__":
     with open("discovered_urls.json", "r", encoding="utf-8") as f:
         book_entries = json.load(f)
+
+    started = datetime.now(timezone.utc)
+    t0 = time.time()
 
     # --- Stage 3: fetch + extract (raw) ---
     records = []
@@ -149,3 +173,17 @@ if __name__ == "__main__":
         json.dump(errors, f, indent=2, ensure_ascii=False)
 
     print(f"good={len(good)} errors={len(errors)} stored={len(store)}")
+
+
+    report = {
+        "started_at": started.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "duration_seconds": round(time.time() - t0, 2),
+        "pages_fetched": STATS["pages_fetched"],
+        "cache_hits": STATS["cache_hits"],
+        "valid_records": len(good),
+        "invalid_records": len(errors) - len(fetch_errors),
+        "failed_pages": len(fetch_errors),
+    }
+    with open("output/run-report.json", "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+    print(report)
