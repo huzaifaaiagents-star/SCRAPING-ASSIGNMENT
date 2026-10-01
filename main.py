@@ -15,6 +15,9 @@ TIMEOUT = 10
 DELAY = 0.5
 RETRY_WAIT = 3
 STATS = {"pages_fetched": 0, "cache_hits": 0}
+
+BASE_URL = "https://books.toscrape.com/catalogue/"
+MAX_PAGES = 3
 # -----------------------------------
 
 
@@ -118,10 +121,39 @@ def extract_record(book_url, source_page):
         "fetched_at": fetched_at,
     }
 
+def discover_urls():
+    entries = []
+    seen = set()
+    page_url = urljoin(BASE_URL, "page-1.html")
+
+    for page_num in range(1, MAX_PAGES + 1):
+        html = get_page(f"catalogue-page-{page_num}.html", page_url)
+        soup = BeautifulSoup(html, "html.parser")
+
+        for article in soup.find_all("article"):
+            link = article.find("a")
+            if link and link.get("href"):
+                url = urljoin(page_url, link["href"])
+                if url not in seen:
+                    seen.add(url)
+                    entries.append({"url": url, "source_page": page_url})
+
+        next_li = soup.find("li", class_="next")
+        if not next_li or page_num == MAX_PAGES:
+            break
+        page_url = urljoin(page_url, next_li.find("a")["href"])
+
+    return entries
 
 if __name__ == "__main__":
-    with open("discovered_urls.json", "r", encoding="utf-8") as f:
-        book_entries = json.load(f)
+    
+    if os.path.exists("discovered_urls.json"):
+        with open("discovered_urls.json", "r", encoding="utf-8") as f:
+            book_entries = json.load(f)
+    else:
+        book_entries = discover_urls()
+        with open("discovered_urls.json", "w", encoding="utf-8") as f:
+            json.dump(book_entries, f, indent=2)
 
     started = datetime.now(timezone.utc)
     t0 = time.time()

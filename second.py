@@ -1,15 +1,10 @@
-import os
-import time
-from urllib.parse import urljoin
-from bs4 import BeautifulSoup
-import requests
+import json
 
-url = "https://books.toscrape.com/catalogue/a-light-in-the-attic_1000/index.html"
-response = requests.get(url, headers={"User-Agent": "FlyRankInternshipA9/1.0 (+your-repo-link)"}, timeout=5)
-response.encoding = "utf-8"
+with open("books.json") as f:  # or whatever your Stage 3 output file is called
+    records = json.load(f)
 
-soup = BeautifulSoup(response.text, "html.parser")
-tag = soup.find("p", class_="star-rating")
+print(len(records))  # sanity check — should be 60
 
-print(type(tag["class"]))
-print(tag["class"])
+missing = [r["product_url"] for r in records if not r.get("rating_text")]
+print(f"{len(missing)} missing rating_text")
+print(missing)
